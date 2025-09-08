@@ -17,12 +17,13 @@ permissions:
 
 jobs:
   validate-pr-release-label:
+    name: Check PR Release Label
     runs-on: ubuntu-latest
     steps:
       - name: Ensure PR has exactly one of: Major / Minor / Patch
         uses: actions/github-script@v7
         with:
-          script: 
+          script: |
             const allowed = new Set(["Major","Minor","Patch"]);
 
             const { data: labels } = await github.rest.issues.listLabelsOnIssue({
@@ -36,25 +37,13 @@ jobs:
             const matched = names.filter(n => allowed.has(n));
 
             if (matched.length === 0) {
-              core.setFailed(
-                "This pull request must have exactly ONE of: Major, Minor, Patch."
-              );
+              core.setFailed(" This pull request must have exactly ONE of: Major, Minor, Patch.");
               return;
             }
 
             if (matched.length > 1) {
-              core.setFailed(
-                `Only one release label is allowed, but found: ${matched.join(", ")}.`
-              );
+              core.setFailed(` Only one release label is allowed, but found: ${matched.join(", ")}.`);
               return;
             }
 
-            // const others = names.filter(n => !allowed.has(n));
-            // if (others.length > 0) {
-            //   core.setFailed(
-            //     `Only a single release label (Major/Minor/Patch) is allowed; remove other labels: ${others.join(", ")}.`
-            //   );
-            //   return;
-            // }
-
-            core.notice(`OK: release label = ${matched[0]}`);
+            core.notice(` OK: release label = ${matched[0]}`);
