@@ -1,157 +1,102 @@
 name: Release
 
+env:
+  IMAGE_NAME: garenmtech1981/wms
+
 on:
-  # 手动触发（可选），可以在面板里选择 bump 类型
+  # 手动触发：选择 bump 类型（major/minor/patch）
   workflow_dispatch:
     inputs:
       bump:
-        description: 'Bump type'
-        required: false
-        default: ''
+        description: "Version bump type"
+        required: true
+        default: patch
         type: choice
-        options:
-          - ''
-          - patch
-          - minor
-          - major
+        options: [major, minor, patch]
 
-  # 当 PR 被合并（closed 且 merged=true）时触发
+  # 当“Release PR”被合并时触发发布
   pull_request:
     types: [closed]
-    branches:
-      - main
+    branches: [master]      # 如果主分支是 main 就改成 main
 
 permissions:
-  contents: write         # 需要写权限：push 代码、推 tag、发 release
-  pull-requests: read
-
-concurrency:
-  group: release-${{ github.ref }}
-  cancel-in-progress: false
+  contents: write
+  pull-requests: write
 
 jobs:
+  # ① 手动触发 → 在 master 上 bump 版本并创建 Release PR
   create_release_pr:
-    if: github.event_name == 'pull_request' && github.event.pull_request.merged == true
+    if: ${{ github.event_name == 'workflow_dispatch' }}
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout base branch (main)
+      - name: Checkout default branch
         uses: actions/checkout@v4
         with:
-          ref: ${{ github.event.pull_request.base.ref }}
-          fetch-depth: 0
+          ref: master         # 如果主分支是 main，这里改 main
 
       - name: Setup Node
         uses: actions/setup-node@v4
         with:
-          node-version: 18
+          node-version: '20'
 
-      # 读取 PR 标签，决定 bump 类型；如果没有标签则默认 patch
-      - name: Decide bump type (from PR label or manual input)
-        id: decide
-        uses: actions/github-script@v7
-        with:
-          script: |
-            // 手动输入优先生效（仅 workflow_dispatch 有）
-            let bump = core.getInput('bump');
-            if (!bump) {
-              const labels = (context.payload.pull_request?.labels || []).map(l => (l.name || '').toLowerCase());
-              if (labels.includes('major')) bump = 'major';
-              else if (labels.includes('minor')) bump = 'minor';
-              else bump = 'patch';
-            }
-            core.setOutput('bump', bump);
-
-      - name: Configure git user
+      - name: Install deps (generate lock if missing)
         run: |
-          git config user.name  "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
+          if [ -f package-lock.json ]; then
+            npm ci
+          else
+            npm i
+          fi
 
       - name: Bump version in package.json
-        run: npm version ${{ steps.decide.outputs.bump }} --no-git-tag-version
-        shell: bash
-
-      - name: Commit & push version bump
+        id: bump
         run: |
-          git add package.json package-lock.json 2>/dev/null || true
-          git commit -m "chore: bump version (${{ steps.decide.outputs.bump }}) [skip ci]" || echo "No changes to commit"
-          git push
-
-      - name: Read version from package.json
-        id: readver
-        run: |
+          npm version "${{ github.event.inputs.bump }}" --no-git-tag-version
           echo "VERSION=$(node -p \"require('./package.json').version\")" >> $GITHUB_ENV
-          echo "version=$(node -p \"require('./package.json').version\")" >> $GITHUB_OUTPUT
-        shell: bash
+          echo "New version: $VERSION"
 
-      - name: Create and push tag
-        run: |
-          git tag "v${VERSION}"
-          git push origin "v${VERSION}"
-
-      - name: Create GitHub Release
-        uses: softprops/action-gh-release@v2
+      - name: Create Pull Request
+        uses: peter-evans/create-pull-request@v6
         with:
-          tag_name: v${{ steps.readver.outputs.version }}
-          name: v${{ steps.readver.outputs.version }}
-          draft: false
-          prerelease: false
+          token: ${{ secrets.GITHUB_TOKEN }}
+          commit-message: "chore(release): bump version to v${{ env.VERSION }}"
+          branch: release/bump-v${{ env.VERSION }}     # 自动建分支
+          title: "Release: v${{ env.VERSION }}"        # PR 标题
+          body: |
+            This PR was created automatically by GitHub Actions.
+            - Bump type: `${{ github.event.inputs.bump }}`
+            - New version: `v${{ env.VERSION }}`
+          base: master                                  # 目标分支（主分支是 main 就改 main）
+          labels: |
+            release
 
-  # 手动触发时也走同样流程（和上面几乎一致）
+  # ② Release PR 合并后 → 构建并推送 Docker 镜像
   build_and_push_on_merge:
-    if: github.event_name == 'workflow_dispatch'
+    if: ${{ github.event_name == 'pull_request' && github.event.action == 'closed' && github.event.pull_request.merged == true }}
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout main
+      - name: Checkout merged code
         uses: actions/checkout@v4
-        with:
-          ref: main
-          fetch-depth: 0
 
-      - name: Setup Node
+      - name: Setup Node (read version)
         uses: actions/setup-node@v4
         with:
-          node-version: 18
-
-      - name: Decide bump type (manual input or default patch)
-        id: decide
-        uses: actions/github-script@v7
-        with:
-          script: |
-            let bump = core.getInput('bump');
-            if (!bump) bump = 'patch';
-            core.setOutput('bump', bump);
-
-      - name: Configure git user
-        run: |
-          git config user.name  "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
-
-      - name: Bump version in package.json
-        run: npm version ${{ steps.decide.outputs.bump }} --no-git-tag-version
-        shell: bash
-
-      - name: Commit & push version bump
-        run: |
-          git add package.json package-lock.json 2>/dev/null || true
-          git commit -m "chore: bump version (${{ steps.decide.outputs.bump }}) [skip ci]" || echo "No changes to commit"
-          git push
+          node-version: '20'
 
       - name: Read version from package.json
-        id: readver
-        run: |
-          echo "VERSION=$(node -p \"require('./package.json').version\")" >> $GITHUB_ENV
-          echo "version=$(node -p \"require('./package.json').version\")" >> $GITHUB_OUTPUT
-        shell: bash
+        run: echo "VERSION=$(node -p \"require('./package.json').version\")" >> $GITHUB_ENV
 
-      - name: Create and push tag
-        run: |
-          git tag "v${VERSION}"
-          git push origin "v${VERSION}"
-
-      - name: Create GitHub Release
-        uses: softprops/action-gh-release@v2
+      - name: Docker login
+        uses: docker/login-action@v3
         with:
-          tag_name: v${{ steps.readver.outputs.version }}
-          name: v${{ steps.readver.outputs.version }}
-          draft: false
-          prerelease: false
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Build image
+        run: |
+          docker build -t "${{ env.IMAGE_NAME }}:${{ env.VERSION }}" \
+                       -t "${{ env.IMAGE_NAME }}:latest" .
+
+      - name: Push image
+        run: |
+          docker push "${{ env.IMAGE_NAME }}:${{ env.VERSION }}"
+          docker push "${{ env.IMAGE_NAME }}:latest"
