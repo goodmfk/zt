@@ -1,10 +1,10 @@
 name: Release
 
 env:
-  IMAGE_NAME: garenmtech1981/wms   # 改成你的 <DockerHub用户名>/<仓库名>
+  IMAGE_NAME: garenmtech1981/wms   # 改成你的 <用户名>/<仓库名>
 
 on:
-  # 手动触发，选择 bump 类型
+  # 手动触发：选择 bump 类型（major/minor/patch）
   workflow_dispatch:
     inputs:
       bump:
@@ -17,72 +17,37 @@ on:
   # 当 Release PR 合并到 master 时触发
   pull_request:
     types: [closed]
-    branches: [master]   # 主分支如果是 main，这里改成 main
+    branches: [master]   # 如果主分支是 main 就改成 main
 
 permissions:
   contents: write
   pull-requests: write
 
 jobs:
-  # ① 手动触发：生成 Release PR
+  # ① 手动触发：在 master 上 bump 版本并创建 Release PR
   create_release_pr:
     if: ${{ github.event_name == 'workflow_dispatch' }}
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout master (with tags)
+      - name: Checkout master
         uses: actions/checkout@v4
         with:
-          ref: master
-          fetch-depth: 0   # 需要完整历史和 tags
-
-      - name: Find latest tag
-        id: lasttag
-        shell: bash
-        run: |
-          TAG=$(git tag --list 'v*' --sort=-version:refname | head -n 1 || true)
-          echo "tag=$TAG" >> $GITHUB_OUTPUT
-          echo "Latest tag: ${TAG:-<none>}"
-
-      - name: Guard - check changes since latest tag
-        id: guard
-        shell: bash
-        run: |
-          if [ -z "${{ steps.lasttag.outputs.tag }}" ]; then
-            echo "No tag yet -> allow release."
-            echo "should_release=true" >> $GITHUB_OUTPUT
-            exit 0
-          fi
-
-          RANGE="${{ steps.lasttag.outputs.tag }}..HEAD"
-          CHANGED=$(git diff --name-only "$RANGE" | grep -Ev '^(package\.json|package-lock\.json|\.github/workflows/release\.yml)$' || true)
-
-          echo "Changed files:"
-          echo "$CHANGED"
-
-          if [ -z "$CHANGED" ]; then
-            echo "No meaningful changes since ${{ steps.lasttag.outputs.tag }} -> skip."
-            echo "should_release=false" >> $GITHUB_OUTPUT
-          else
-            echo "should_release=true" >> $GITHUB_OUTPUT
-          fi
-
-      - name: Stop if no changes
-        if: ${{ steps.guard.outputs.should_release != 'true' }}
-        run: echo "Skip creating Release PR: no code changes since last tag."
+          ref: master   # 如果主分支是 main，这里改 main
 
       - name: Setup Node
-        if: ${{ steps.guard.outputs.should_release == 'true' }}
         uses: actions/setup-node@v4
         with:
           node-version: '20'
 
-      - name: Install deps
-        if: ${{ steps.guard.outputs.should_release == 'true' }}
+      - name: Install dependencies
         run: |
-          if [ -f package-lock.json ]; then npm ci; else npm i; fi
+          if [ -f package-lock.json ]; then
+            npm ci
+          else
+            npm i
+          fi
 
       - name: Bump version
-        if: ${{ steps.guard.outputs.should_release == 'true' }}
         id: bump
         shell: bash
         run: |
@@ -92,7 +57,6 @@ jobs:
           echo "New version: $VERSION"
 
       - name: Create Release PR
-        if: ${{ steps.guard.outputs.should_release == 'true' }}
         uses: peter-evans/create-pull-request@v6
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
@@ -111,20 +75,16 @@ jobs:
     if: ${{ github.event_name == 'pull_request' && github.event.action == 'closed' && github.event.pull_request.merged == true }}
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
+      - name: Checkout merged code
+        uses: actions/checkout@v4
 
-      - uses: actions/setup-node@v4
+      - name: Setup Node
+        uses: actions/setup-node@v4
         with:
           node-version: '20'
 
       - name: Read version
-        shell: bash
-        run: |
-          VERSION=$(node -p "require('./package.json').version")
-          echo "VERSION=$VERSION" >> $GITHUB_ENV
-          echo "Read version: $VERSION"
+        run: echo "VERSION=$(node -p \"require('./package.json').version\")" >> $GITHUB_ENV
 
       - name: Docker login
         uses: docker/login-action@v3
@@ -141,18 +101,3 @@ jobs:
         run: |
           docker push "${{ env.IMAGE_NAME }}:${{ env.VERSION }}"
           docker push "${{ env.IMAGE_NAME }}:latest"
-
-      - name: Create git tag
-        shell: bash
-        run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
-          git tag -a "v${{ env.VERSION }}" -m "Release v${{ env.VERSION }}"
-          git push origin "v${{ env.VERSION }}"
-
-  # ③ 可选：当 PR 被关闭但未合并时，避免显示红色
-  skip_when_closed_without_merge:
-    if: ${{ github.event_name == 'pull_request' && github.event.action == 'closed' && github.event.pull_request.merged == false }}
-    runs-on: ubuntu-latest
-    steps:
-      - run: echo "PR closed without merge. Skipping release."
