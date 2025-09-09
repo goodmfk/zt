@@ -1,0 +1,106 @@
+
+name: Release (PR bump & Docker publish)
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, labeled, unlabeled, closed]
+    branches: [master]       # 如果你的主分支是 main，这里改成 main
+  workflow_dispatch: {}
+
+permissions:
+  contents: write
+  pull-requests: read
+
+env:
+  IMAGE_NAME: goodmfk/zt     # ← 改成 <你的DockerHub用户名>/<镜像名>
+  VERSION: 1.0.0   
+jobs:
+  bump_version_in_pr:
+    name: Bump version in PR
+    runs-on: ubuntu-latest
+    if: github.event.action != 'closed'  # PR 打开/同步/改标签时运行
+    steps:
+      - name: Checkout PR branch
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.head_ref }}
+
+      - name: Determine bump type from PR labels
+        id: bump
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const labels = context.payload.pull_request.labels.map(l => l.name.toLowerCase());
+            const allowed = ['major','minor','patch'];
+            const found = labels.find(l => allowed.includes(l));
+            if (!found) {
+              core.setFailed('PR 必须带有标签：Major / Minor / Patch 之一');
+            } else {
+              core.setOutput('type', found);
+            }
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Install (generate lock if missing)
+        run: |
+          if [ -f package-lock.json ]; then
+            npm ci
+          else
+            npm i
+          fi
+
+      - name: Bump package.json version (no git tag)
+        run: |
+          BUMP=${{ steps.bump.outputs.type }}
+          if [ "$BUMP" = "major" ]; then
+            npm version major --no-git-tag-version
+          elif [ "$BUMP" = "minor" ]; then
+            npm version minor --no-git-tag-version
+          else
+            npm version patch --no-git-tag-version
+          fi
+          echo "VERSION=$(node -p \"require('./package.json').version\")" >> $GITHUB_ENV
+          echo "Bumped version to $VERSION"
+
+      - name: Commit back to PR branch
+        uses: stefanzweifel/git-auto-commit-action@v5
+        with:
+          commit_message: "chore(release): bump version to ${{ env.VERSION }}"
+          file_pattern: package.json package-lock.json
+
+  build_and_push_docker_on_merge:
+    name: Build & Push Docker (on merge)
+    runs-on: ubuntu-latest
+    needs: bump_version_in_pr
+    if: github.event.action == 'closed' && github.event.pull_request.merged == true
+    steps:
+      - name: Checkout merged code
+        uses: actions/checkout@v4
+
+      - name: Setup Node (to read package.json)
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Read version from package.json
+        id: ver
+        run: echo "VERSION=$(node -p \"require('./package.json').version\")" >> $GITHUB_ENV
+
+      - name: Docker login
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Build image
+        run: |
+          docker build -t "${{ env.IMAGE_NAME }}:${{ env.VERSION }}" \
+                       -t "${{ env.IMAGE_NAME }}:latest" .
+
+      - name: Push image
+        run: |
+          docker push "${{ env.IMAGE_NAME }}:${{ env.VERSION }}"
+          docker push "${{ env.IMAGE_NAME }}:latest"
