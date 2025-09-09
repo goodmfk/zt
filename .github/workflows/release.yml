@@ -1,7 +1,7 @@
 name: Release
 
 env:
-  IMAGE_NAME: garenmtech1981/wms
+  IMAGE_NAME: garenmtech1981/wms   # 改成你的 <用户名>/<仓库名>
 
 on:
   # 手动触发：选择 bump 类型（major/minor/patch）
@@ -14,32 +14,32 @@ on:
         type: choice
         options: [major, minor, patch]
 
-  # 当“Release PR”被合并时触发发布
+  # 当 Release PR 合并到 master 时触发
   pull_request:
     types: [closed]
-    branches: [master]      # 如果主分支是 main 就改成 main
+    branches: [master]   # 如果主分支是 main 就改成 main
 
 permissions:
   contents: write
   pull-requests: write
 
 jobs:
-  # ① 手动触发 → 在 master 上 bump 版本并创建 Release PR
+  # ① 手动触发：在 master 上 bump 版本并创建 Release PR
   create_release_pr:
     if: ${{ github.event_name == 'workflow_dispatch' }}
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout default branch
+      - name: Checkout master
         uses: actions/checkout@v4
         with:
-          ref: master         # 如果主分支是 main，这里改 main
+          ref: master   # 如果主分支是 main，这里改 main
 
       - name: Setup Node
         uses: actions/setup-node@v4
         with:
           node-version: '20'
 
-      - name: Install deps (generate lock if missing)
+      - name: Install dependencies
         run: |
           if [ -f package-lock.json ]; then
             npm ci
@@ -47,29 +47,30 @@ jobs:
             npm i
           fi
 
-      - name: Bump version in package.json
+      - name: Bump version
         id: bump
+        shell: bash
         run: |
           npm version "${{ github.event.inputs.bump }}" --no-git-tag-version
-          echo "VERSION=$(node -p \"require('./package.json').version\")" >> $GITHUB_ENV
+          VERSION=$(node -p "require('./package.json').version")
+          echo "VERSION=$VERSION" >> $GITHUB_ENV
           echo "New version: $VERSION"
 
-      - name: Create Pull Request
+      - name: Create Release PR
         uses: peter-evans/create-pull-request@v6
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
           commit-message: "chore(release): bump version to v${{ env.VERSION }}"
-          branch: release/bump-v${{ env.VERSION }}     # 自动建分支
-          title: "Release: v${{ env.VERSION }}"        # PR 标题
+          branch: release/bump-v${{ env.VERSION }}
+          title: "Release: v${{ env.VERSION }}"
           body: |
             This PR was created automatically by GitHub Actions.
             - Bump type: `${{ github.event.inputs.bump }}`
             - New version: `v${{ env.VERSION }}`
-          base: master                                  # 目标分支（主分支是 main 就改 main）
-          labels: |
-            release
+          base: master
+          labels: release
 
-  # ② Release PR 合并后 → 构建并推送 Docker 镜像
+  # ② Release PR 合并后：构建并推送 Docker 镜像
   build_and_push_on_merge:
     if: ${{ github.event_name == 'pull_request' && github.event.action == 'closed' && github.event.pull_request.merged == true }}
     runs-on: ubuntu-latest
@@ -77,12 +78,12 @@ jobs:
       - name: Checkout merged code
         uses: actions/checkout@v4
 
-      - name: Setup Node (read version)
+      - name: Setup Node
         uses: actions/setup-node@v4
         with:
           node-version: '20'
 
-      - name: Read version from package.json
+      - name: Read version
         run: echo "VERSION=$(node -p \"require('./package.json').version\")" >> $GITHUB_ENV
 
       - name: Docker login
