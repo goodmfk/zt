@@ -1,102 +1,54 @@
-name: Release
-
-env:
-  IMAGE_NAME: garenmtech1981/wms
+name: PR Label Check
 
 on:
-  # 手动触发：选择 bump 类型（major/minor/patch）
-  workflow_dispatch:
-    inputs:
-      bump:
-        description: "Version bump type"
-        required: true
-        default: patch
-        type: choice
-        options: [major, minor, patch]
-
-  # 当“Release PR”被合并时触发发布
   pull_request:
-    types: [closed]
-    branches: [master]      # 如果主分支是 main 就改成 main
+    types:
+      [
+        opened,
+        reopened,
+        synchronize,
+        labeled,
+        unlabeled,
+        ready_for_review,
+        edited,
+      ]
 
 permissions:
-  contents: write
-  pull-requests: write
+  contents: read
+  pull-requests: read
 
 jobs:
-  # ① 手动触发 → 在 master 上 bump 版本并创建 Release PR
-  create_release_pr:
-    if: ${{ github.event_name == 'workflow_dispatch' }}
+  validate-pr-release-label:
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout default branch
-        uses: actions/checkout@v4
+      - name: labelCheck
+        uses: actions/github-script@v7
         with:
-          ref: master         # 如果主分支是 main，这里改 main
+          script: |
+            const allowed = new Set(["Major","Minor","Patch"]);
 
-      - name: Setup Node
-        uses: actions/setup-node@v4
-        with:
-          node-version: '20'
+            const { data: labels } = await github.rest.issues.listLabelsOnIssue({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number,
+              per_page: 100,
+            });
 
-      - name: Install deps (generate lock if missing)
-        run: |
-          if [ -f package-lock.json ]; then
-            npm ci
-          else
-            npm i
-          fi
+            const names = labels.map(l => l.name);
+            const matched = names.filter(n => allowed.has(n));
 
-      - name: Bump version in package.json
-        id: bump
-        run: |
-          npm version "${{ github.event.inputs.bump }}" --no-git-tag-version
-          echo "VERSION=$(node -p \"require('./package.json').version\")" >> $GITHUB_ENV
-          echo "New version: $VERSION"
+            if (matched.length === 0) {
+              core.setFailed(
+                "This pull request must have exactly ONE of: Major, Minor, Patch."
+              );
+              return;
+            }
 
-      - name: Create Pull Request
-        uses: peter-evans/create-pull-request@v6
-        with:
-          token: ${{ secrets.GITHUB_TOKEN }}
-          commit-message: "chore(release): bump version to v${{ env.VERSION }}"
-          branch: release/bump-v${{ env.VERSION }}     # 自动建分支
-          title: "Release: v${{ env.VERSION }}"        # PR 标题
-          body: |
-            This PR was created automatically by GitHub Actions.
-            - Bump type: `${{ github.event.inputs.bump }}`
-            - New version: `v${{ env.VERSION }}`
-          base: master                                  # 目标分支（主分支是 main 就改 main）
-          labels: |
-            release
+            if (matched.length > 1) {
+              core.setFailed(
+                `Only one release label is allowed, but found: ${matched.join(", ")}.`
+              );
+              return;
+            }
 
-  # ② Release PR 合并后 → 构建并推送 Docker 镜像
-  build_and_push_on_merge:
-    if: ${{ github.event_name == 'pull_request' && github.event.action == 'closed' && github.event.pull_request.merged == true }}
-    runs-on: ubuntu-latest
-    steps:
-      - name: Checkout merged code
-        uses: actions/checkout@v4
-
-      - name: Setup Node (read version)
-        uses: actions/setup-node@v4
-        with:
-          node-version: '20'
-
-      - name: Read version from package.json
-        run: echo "VERSION=$(node -p \"require('./package.json').version\")" >> $GITHUB_ENV
-
-      - name: Docker login
-        uses: docker/login-action@v3
-        with:
-          username: ${{ secrets.DOCKERHUB_USERNAME }}
-          password: ${{ secrets.DOCKERHUB_TOKEN }}
-
-      - name: Build image
-        run: |
-          docker build -t "${{ env.IMAGE_NAME }}:${{ env.VERSION }}" \
-                       -t "${{ env.IMAGE_NAME }}:latest" .
-
-      - name: Push image
-        run: |
-          docker push "${{ env.IMAGE_NAME }}:${{ env.VERSION }}"
-          docker push "${{ env.IMAGE_NAME }}:latest"
+            core.notice(`OK: release label = ${matched[0]}`);
