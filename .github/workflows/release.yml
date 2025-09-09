@@ -1,7 +1,7 @@
 name: Release
 
 env:
-  IMAGE_NAME: garenmtech1981/wms   # 改成你的 <用户名>/<仓库名>
+  IMAGE_NAME: garenmtech1981/wms   # 改成你的 <DockerHub用户名>/<仓库名>
 
 on:
   # 手动触发，选择 bump 类型
@@ -40,7 +40,7 @@ jobs:
         shell: bash
         run: |
           TAG=$(git tag --list 'v*' --sort=-version:refname | head -n 1 || true)
-          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          echo "tag=$TAG" >> $GITHUB_OUTPUT
           echo "Latest tag: ${TAG:-<none>}"
 
       - name: Guard - check changes since latest tag
@@ -49,21 +49,21 @@ jobs:
         run: |
           if [ -z "${{ steps.lasttag.outputs.tag }}" ]; then
             echo "No tag yet -> allow release."
-            echo "should_release=true" >> "$GITHUB_OUTPUT"
+            echo "should_release=true" >> $GITHUB_OUTPUT
             exit 0
           fi
 
-          CHANGED=$(git diff --name-only "${{ steps.lasttag.outputs.tag }}..HEAD" | \
-            grep -Ev '^(package\.json|package-lock\.json|\.github/workflows/release\.yml)$' || true)
+          RANGE="${{ steps.lasttag.outputs.tag }}..HEAD"
+          CHANGED=$(git diff --name-only "$RANGE" | grep -Ev '^(package\.json|package-lock\.json|\.github/workflows/release\.yml)$' || true)
 
           echo "Changed files:"
           echo "$CHANGED"
 
           if [ -z "$CHANGED" ]; then
             echo "No meaningful changes since ${{ steps.lasttag.outputs.tag }} -> skip."
-            echo "should_release=false" >> "$GITHUB_OUTPUT"
+            echo "should_release=false" >> $GITHUB_OUTPUT
           else
-            echo "should_release=true" >> "$GITHUB_OUTPUT"
+            echo "should_release=true" >> $GITHUB_OUTPUT
           fi
 
       - name: Stop if no changes
@@ -88,7 +88,7 @@ jobs:
         run: |
           npm version "${{ github.event.inputs.bump }}" --no-git-tag-version
           VERSION=$(node -p "require('./package.json').version")
-          echo "VERSION=$VERSION" >> "$GITHUB_ENV"
+          echo "VERSION=$VERSION" >> $GITHUB_ENV
           echo "New version: $VERSION"
 
       - name: Create Release PR
