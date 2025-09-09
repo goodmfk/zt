@@ -1,7 +1,7 @@
 name: Release
 
 env:
-  IMAGE_NAME: garenmtech1981/wms   # 改成你的 <DockerHub用户名>/<仓库名>
+  IMAGE_NAME: garenmtech1981/wms   # 改成你的 <用户名>/<仓库名>
 
 on:
   # 手动触发，选择 bump 类型
