@@ -1,81 +1,15 @@
-name: Release
-
-env:
-  IMAGE_NAME: goodmfk/zt
+name: Hello Test Action
 
 on:
-  pull_request:
-    types: [opened, synchronize, reopened, labeled, unlabeled, closed]
-    branches: [master]
-  workflow_dispatch: {}
-
-permissions:
-  contents: write
-  pull-requests: read
+  pull_request:   # 当有人提 PR 时运行
+  workflow_dispatch:   # 手动触发也行
 
 jobs:
-  bump_version_in_pr:
+  say-hello:
     runs-on: ubuntu-latest
-    if: github.event.action != 'closed'
     steps:
-      - uses: actions/checkout@v4
-        with:
-          ref: ${{ github.head_ref }}
+      - name: Checkout code
+        uses: actions/checkout@v4
 
-      - id: bump
-        uses: actions/github-script@v7
-        with:
-          script: |
-            const labels = context.payload.pull_request.labels.map(l => l.name.toLowerCase());
-            const allowed = ['major','minor','patch'];
-            const found = labels.find(l => allowed.includes(l));
-            if (!found) core.setFailed('PR 需要 Major/Minor/Patch 标签');
-            else core.setOutput('type', found);
-
-      - uses: actions/setup-node@v4
-        with:
-          node-version: '20'
-
-      - name: Bump version
-        run: |
-          case "${{ steps.bump.outputs.type }}" in
-            major) npm version major --no-git-tag-version ;;
-            minor) npm version minor --no-git-tag-version ;;
-            *)     npm version patch --no-git-tag-version ;;
-          esac
-          echo "VERSION=$(node -p \"require('./package.json').version\")" >> $GITHUB_ENV
-
-      - uses: stefanzweifel/git-auto-commit-action@v5
-        with:
-          commit_message: "chore(release): bump version to ${{ env.VERSION }}"
-          file_pattern: package.json package-lock.json
-
-  build_and_push_on_merge:
-    runs-on: ubuntu-latest
-    needs: bump_version_in_pr
-    if: github.event.action == 'closed' && github.event.pull_request.merged == true
-    steps:
-      - uses: actions/checkout@v4
-
-      - uses: actions/setup-node@v4
-        with:
-          node-version: '20'
-
-      - name: Read version
-        run: echo "VERSION=$(node -p \"require('./package.json').version\")" >> $GITHUB_ENV
-
-      - name: Docker login
-        uses: docker/login-action@v3
-        with:
-          username: ${{ secrets.DOCKERHUB_USERNAME }}
-          password: ${{ secrets.DOCKERHUB_TOKEN }}
-
-      - name: Build
-        run: |
-          docker build -t "${{ env.IMAGE_NAME }}:${{ env.VERSION }}" \
-                       -t "${{ env.IMAGE_NAME }}:latest" .
-
-      - name: Push
-        run: |
-          docker push "${{ env.IMAGE_NAME }}:${{ env.VERSION }}"
-          docker push "${{ env.IMAGE_NAME }}:latest"
+      - name: Say Hello
+        run: echo "✅ Hello from GitHub Action! 触发成功"
