@@ -1,7 +1,7 @@
 name: Release
 
 env:
-  IMAGE_NAME: goodmfk/zt   # ← 改成 <你的DockerHub用户名>/<镜像名>
+  IMAGE_NAME: garenmtech1981/wms
 
 on:
   # 手动触发：选择 bump 类型（major/minor/patch）
