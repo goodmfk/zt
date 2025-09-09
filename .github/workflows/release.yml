@@ -1,43 +1,51 @@
 name: Release
 
 on:
-  workflow_dispatch:
-    inputs:
-      bump:
-        description: "Version bump type"
-        required: true
-        default: patch
-        type: choice
-        options: [major, minor, patch]
-
+  # 只在 PR 合并到 master 时触发
   pull_request:
     types: [closed]
-    branches: [master]   # 主分支是 main 的话改成 main
+    branches: [master]
 
-# 防止多次并发手滑触发
+# 防止并发触发
 concurrency:
   group: release
   cancel-in-progress: true
 
 permissions:
-  contents: write
-  pull-requests: write
+  contents: write        # 需要写权限推回 master、打 tag
+  pull-requests: read
 
 env:
-  IMAGE_NAME: garenmtech1981/wms   # 改成你的 <DockerHub用户名>/<仓库名>
+  IMAGE_NAME: garenmtech1981/wms    # 改成你的 <DockerHub用户名>/<仓库名>
 
 jobs:
-  # ① 手动触发：守卫检查 + 生成 Release PR
-  create_release_pr:
-    if: ${{ github.event_name == 'workflow_dispatch' }}
+  release_on_merge:
+    if: ${{ github.event.pull_request.merged == true }}
     runs-on: ubuntu-latest
+
     steps:
       - name: Checkout master (with tags)
         uses: actions/checkout@v4
         with:
           ref: master
-          fetch-depth: 0                      # 需要拿到历史和 tags
+          fetch-depth: 0                # 需要拿到历史和 tags
 
+      # 读取合并 PR 的 label，自动判定 bump 类型
+      - name: Detect bump from PR labels
+        id: bump
+        shell: bash
+        run: |
+          # 读入当前事件中的 PR labels
+          labels=$(jq -r '.pull_request.labels[].name' "$GITHUB_EVENT_PATH" | tr '\n' ' ' | tr '[:upper:]' '[:lower:]')
+          echo "PR labels: $labels"
+
+          BUMP="patch"
+          if echo "$labels" | grep -q 'major'; then BUMP="major"; fi
+          if echo "$labels" | grep -q 'minor'; then BUMP="minor"; fi
+          echo "bump=$BUMP" >> "$GITHUB_OUTPUT"
+          echo "Using bump type: $BUMP"
+
+      # 找最新 tag（vX.Y.Z），用于做守卫
       - name: Find latest tag
         id: lasttag
         shell: bash
@@ -46,6 +54,7 @@ jobs:
           echo "tag=$TAG" >> "$GITHUB_OUTPUT"
           echo "Latest tag: ${TAG:-<none>}"
 
+      # 从最新 tag 到 HEAD 的实际改动（排除仅改版本/工作流的场景）
       - name: Guard - check changes since latest tag
         id: guard
         shell: bash
@@ -56,11 +65,10 @@ jobs:
             exit 0
           fi
 
-          # 计算从最新 tag 到 HEAD 的差异；排除仅改版本/工作流的场景
           CHANGED=$(git diff --name-only "${{ steps.lasttag.outputs.tag }}..HEAD" | \
             grep -Ev '^(package\.json|package-lock\.json|\.github/workflows/release\.yml)$' || true)
 
-          echo "Changed files:"
+          echo "Changed files since last tag (filtered):"
           echo "$CHANGED"
 
           if [ -z "$CHANGED" ]; then
@@ -72,86 +80,68 @@ jobs:
 
       - name: Stop if no changes
         if: ${{ steps.guard.outputs.should_release != 'true' }}
-        shell: bash
-        run: |
-          echo "Skip creating Release PR: no code changes since last tag."
-          # 让 Job 成功结束（绿色 skipped），后续步骤不再执行
-          exit 0
+        run: echo "Skip release: no code changes since last tag."
 
       - name: Setup Node
+        if: ${{ steps.guard.outputs.should_release == 'true' }}
         uses: actions/setup-node@v4
         with:
           node-version: '20'
 
       - name: Install dependencies
+        if: ${{ steps.guard.outputs.should_release == 'true' }}
         shell: bash
         run: |
           if [ -f package-lock.json ]; then npm ci; else npm i; fi
 
-      - name: Bump version
-        id: bump
+      # 自动 bump 版本并推回 master
+      - name: Bump version and push
+        if: ${{ steps.guard.outputs.should_release == 'true' }}
+        id: ver
         shell: bash
         run: |
-          npm version "${{ github.event.inputs.bump }}" --no-git-tag-version
+          npm version "${{ steps.bump.outputs.bump }}" --no-git-tag-version
           VERSION=$(node -p "require('./package.json').version")
-          echo "VERSION=$VERSION" >> $GITHUB_ENV
+          echo "VERSION=$VERSION" >> "$GITHUB_ENV"
           echo "New version: $VERSION"
 
-      - name: Create Release PR
-        uses: peter-evans/create-pull-request@v6
-        with:
-          token: ${{ secrets.GITHUB_TOKEN }}
-          commit-message: "chore(release): bump version to v${{ env.VERSION }}"
-          branch: release/bump-v${{ env.VERSION }}
-          title: "Release: v${{ env.VERSION }}"
-          body: |
-            This PR was created automatically by GitHub Actions.
-            - Bump type: `${{ github.event.inputs.bump }}`
-            - New version: `v${{ env.VERSION }}`
-          base: master
-          labels: release
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add package.json package-lock.json || true
+          git commit -m "chore(release): v$VERSION" || echo "No changes to commit"
+          git push origin HEAD:master
 
-  # ② Release PR 合并后：构建并推送 Docker 镜像
-  build_and_push_on_merge:
-    if: ${{ github.event_name == 'pull_request' && github.event.action == 'closed' && github.event.pull_request.merged == true }}
-    runs-on: ubuntu-latest
-    steps:
-      - name: Checkout merged code
-        uses: actions/checkout@v4
-
-      - name: Setup Node
-        uses: actions/setup-node@v4
-        with:
-          node-version: '20'
-
-      - name: Read version
+      # 打 tag 并 push
+      - name: Create git tag
+        if: ${{ steps.guard.outputs.should_release == 'true' }}
         shell: bash
         run: |
-          VERSION=$(node -p "require('./package.json').version")
-          echo "VERSION=$VERSION" >> $GITHUB_ENV
-          echo "Read version: $VERSION"
+          if [ -z "${{ env.VERSION }}" ]; then
+            echo "VERSION is empty!"; exit 1;
+          fi
+          git tag -a "v${{ env.VERSION }}" -m "Release v${{ env.VERSION }}"
+          git push origin "v${{ env.VERSION }}"
 
+      # Docker 登录
       - name: Docker login
+        if: ${{ steps.guard.outputs.should_release == 'true' }}
         uses: docker/login-action@v3
         with:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
 
+      # 构建镜像
       - name: Build image
+        if: ${{ steps.guard.outputs.should_release == 'true' }}
         shell: bash
         run: |
           docker build -t "${{ env.IMAGE_NAME }}:${{ env.VERSION }}" \
                        -t "${{ env.IMAGE_NAME }}:latest" .
 
+      # 推送镜像
       - name: Push image
+        if: ${{ steps.guard.outputs.should_release == 'true' }}
         shell: bash
         run: |
           docker push "${{ env.IMAGE_NAME }}:${{ env.VERSION }}"
           docker push "${{ env.IMAGE_NAME }}:latest"
-
-  # ③ 可选：PR 被关闭但未合并时，只输出一句话避免红色
-  skip_when_closed_without_merge:
-    if: ${{ github.event_name == 'pull_request' && github.event.action == 'closed' && github.event.pull_request.merged == false }}
-    runs-on: ubuntu-latest
-    steps:
-      - run: echo "PR closed without merge. Skipping release."
