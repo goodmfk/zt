@@ -1,18 +1,7 @@
 name: Release
 
 on:
-  workflow_dispatch:
-    inputs:
-      force:
-        description: "Force create release PR even if no changes since last tag"
-        required: false
-        default: "false"
-        type: boolean
-
-  pull_request:
-    types: [closed]
-    branches: [master]   # 如果主分支是 main 的话改成 main
-
+  
 # 防止多次并发手滑触发
 concurrency:
   group: release
