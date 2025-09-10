@@ -78,25 +78,6 @@ jobs:
           # 让 Job 成功结束（绿色 skipped），后续步骤不再执行
           exit 0
 
-      - name: Setup Node
-        uses: actions/setup-node@v4
-        with:
-          node-version: '20'
-
-      - name: Install dependencies
-        shell: bash
-        run: |
-          if [ -f package-lock.json ]; then npm ci; else npm i; fi
-
-      - name: Bump version
-        id: bump
-        shell: bash
-        run: |
-          npm version "${{ github.event.inputs.bump }}" --no-git-tag-version
-          VERSION=$(node -p "require('./package.json').version")
-          echo "VERSION=$VERSION" >> $GITHUB_ENV
-          echo "New version: $VERSION"
-
       - name: Check for existing release PR
         id: check_pr
         uses: jwalton/gh-find-current-pr@v1
@@ -115,6 +96,25 @@ jobs:
         run: |
           echo "Skip creating Release PR: existing release PR ${{ steps.check_pr.outputs.pr_number }} found."
           exit 0
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Install dependencies
+        shell: bash
+        run: |
+          if [ -f package-lock.json ]; then npm ci; else npm i; fi
+
+      - name: Bump version
+        id: bump
+        shell: bash
+        run: |
+          npm version "${{ github.event.inputs.bump }}" --no-git-tag-version
+          VERSION=$(node -p "require('./package.json').version")
+          echo "VERSION=$VERSION" >> $GITHUB_ENV
+          echo "New version: $VERSION"
 
       - name: Create Release PR
         uses: peter-evans/create-pull-request@v6
