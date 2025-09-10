@@ -1,4 +1,5 @@
-console.log("test1")
+console.log("这是test2 lable 是 minor")
+
 
 
 
