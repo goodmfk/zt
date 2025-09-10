@@ -1,13 +1,7 @@
 name: Release
 
 on:
-  workflow_dispatch:
-    inputs:
-      force:
-        description: "Force create release PR even if no changes since last tag"
-        required: false
-        default: "false"
-        type: boolean
+  workflow_dispatch: {}
 
 concurrency:
   group: release
@@ -107,7 +101,6 @@ jobs:
           This PR was created automatically by GitHub Actions.
           - Bump type: `${{ steps.determine_bump.outputs.version_bump }}`
           - New version: `v${{ env.VERSION }}`
-          - Forced: `${{ github.event.inputs.force || 'false' }}`
         base: master
         labels: release
 
