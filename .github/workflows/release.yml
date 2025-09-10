@@ -2,7 +2,7 @@ name: Release
 
 on:
   # 只有一个按钮，不带任何输入项
-  workflow_dispatch:
+  workflow_dispatch: {}
 
   # 合并 Release PR 后自动构建/发布
   pull_request:
