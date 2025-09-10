@@ -96,7 +96,7 @@ jobs:
         run: |
           echo "Skip: existing release PR #${{ steps.open_release_pr.outputs.pr_number }}."
 
-      # === 自动计算 bump：按 PR 标签 major > minor > patch 取最高，并输出调试明细 ===
+      # === 自动计算 bump：排除 Release PR；按 PR 标签 major > minor > patch 取最高，并输出调试明细 ===
       - name: Auto-detect bump from merged PR labels
         if: ${{ steps.guard.outputs.should_release == 'true' && steps.open_release_pr.outputs.pr_number == '' }}
         id: suggest
@@ -105,58 +105,70 @@ jobs:
           script: |
             const { owner, repo } = context.repo;
             const tag = '${{ steps.lasttag.outputs.tag }}';
-            let since = null;
+            const { execSync } = require('node:child_process');
 
-            // 取上一个 tag 的时间（ISO）
+            // 优先取 tag 的 taggerdate（真正的打 tag 时间）；失败再退回到被标记 commit 的时间
+            let since = null;
             if (tag) {
-              const { execSync } = require('node:child_process');
               try {
-                since = execSync(`git log -1 --format=%cI ${tag}`, {stdio:['ignore','pipe','pipe']})
+                since = execSync(`git for-each-ref --format='%(taggerdate:iso8601)' refs/tags/${tag}`, {stdio:['ignore','pipe','pipe']})
                          .toString().trim();
-              } catch (e) { since = null; }
+              } catch (_) {}
+              if (!since) {
+                try {
+                  since = execSync(`git log -1 --format=%cI ${tag}`, {stdio:['ignore','pipe','pipe']})
+                           .toString().trim();
+                } catch (_) {}
+              }
             }
 
-            // 搜索：自 since 起合并到 master 的 PR
             const q = `repo:${owner}/${repo} is:pr is:merged base:master${since ? ' merged:>=' + since : ''}`;
             const res = await github.rest.search.issuesAndPullRequests({ q, per_page: 100 });
             const items = res.data.items || [];
 
             const rows = [];
-            let rank = 1; // 1:patch, 2:minor, 3:major
-            for (const pr of items) {
-              const labels = (pr.labels || []).map(l => (typeof l === 'string' ? l : l.name));
-              const labelsLower = labels.map(s => String(s).toLowerCase().trim());
+            let rank = 0; // 0:none, 1:patch, 2:minor, 3:major
 
-              if (labelsLower.includes('major')) rank = 3;
+            for (const pr of items) {
+              // 读取 head.ref（用于识别 release/*），同时用搜索结果里的 labels 做判定，减少 API 数量
+              let headRef = '';
+              try {
+                const full = await github.rest.pulls.get({ owner, repo, pull_number: pr.number });
+                headRef = full.data.head?.ref || '';
+              } catch (_) {}
+
+              const rawLabels = (pr.labels || []).map(l => (typeof l === 'string' ? l : l.name));
+              const labelsLower = rawLabels.map(s => String(s || '').toLowerCase().trim());
+
+              const isReleasePR = labelsLower.includes('release') || headRef.startsWith('release/');
+              if (isReleasePR) {
+                rows.push({ number: pr.number, title: pr.title, merged_at: pr.closed_at || 'n/a', labels: rawLabels.join(', '), skipped: true });
+                continue;
+              }
+
+              if (labelsLower.includes('major'))      rank = Math.max(rank, 3);
               else if (labelsLower.includes('minor')) rank = Math.max(rank, 2);
               else if (labelsLower.includes('patch')) rank = Math.max(rank, 1);
 
-              rows.push({
-                number: pr.number,
-                title: pr.title,
-                merged_at: pr.closed_at || 'n/a',
-                labels: labels.join(', ')
-              });
-
-              if (rank === 3) break; // 有 major 可提前结束
+              rows.push({ number: pr.number, title: pr.title, merged_at: pr.closed_at || 'n/a', labels: rawLabels.join(', '), skipped: false });
+              if (rank === 3) break; // 有 major 就可提前结束
             }
 
-            const bumpMap = {1:'patch', 2:'minor', 3:'major'};
+            const bumpMap = {0:'patch', 1:'patch', 2:'minor', 3:'major'};
             const recommended = bumpMap[rank] || 'patch';
 
-            core.info(`Detected ${items.length} merged PRs since tag ${tag || '<none>'}`);
+            core.info(`Since tag ${tag || '<none>'}; query returned ${items.length} merged PRs.`);
             for (const r of rows) {
-              core.info(`#${r.number} | ${r.title} | labels: [${r.labels}] | merged_at: ${r.merged_at}`);
+              core.info(`#${r.number} | ${r.title} | labels: [${r.labels}] | merged_at: ${r.merged_at} | ${r.skipped ? 'SKIPPED (release PR)' : 'USED'}`);
             }
             core.info(`=> Auto bump: ${recommended}`);
 
-            // 写入 Job Summary（Actions 页面顶部可见）
             await core.summary
               .addHeading('Auto-detected bump')
               .addRaw(`Since tag: **${tag || '<none>'}**  | Base: **master**  | Result: **${recommended.toUpperCase()}**\n\n`)
               .addTable([
-                [{data: 'PR', header: true}, {data: 'Title', header: true}, {data: 'Labels', header: true}, {data: 'Merged at', header: true}],
-                ...rows.map(r => [`#${r.number}`, r.title, r.labels || '(none)', r.merged_at])
+                [{data: 'PR', header: true}, {data: 'Title', header: true}, {data: 'Labels', header: true}, {data: 'Merged at', header: true}, {data: 'Note', header: true}],
+                ...rows.map(r => [`#${r.number}`, r.title, r.labels || '(none)', r.merged_at, r.skipped ? 'skipped (release PR)' : 'used'])
               ])
               .write();
 
