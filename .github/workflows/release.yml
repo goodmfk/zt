@@ -99,7 +99,7 @@ jobs:
 
       - name: Check for existing release PR
         id: check_pr
-        uses: jwalton/gh-find-pr@v1
+        uses: jwalton/gh-find-current-pr@v1
         with:
           head: '*release/*'
           base: 'master'
