@@ -20,7 +20,7 @@ concurrency:
 
 permissions:
   contents: read
-  pull-requests: read
+  pull-requests: write
 
 jobs:
   create_release_pr:
@@ -113,6 +113,7 @@ jobs:
             This PR was created automatically by GitHub Actions.
             - Bump type: `${{ steps.determine_bump.outputs.version_bump }}`
             - New version: `v${{ env.VERSION }}`
+            - Forced: `${{ github.event.inputs.force || 'false' }}`
           base: master
           labels: release
 
