@@ -12,7 +12,7 @@ on:
 
   pull_request:
     types: [closed]
-    branches: [master]   # 主分支是 main 的话改成 main
+    branches: [master]   # 如果主分支是 main 的话改成 main
 
 # 防止多次并发手滑触发
 concurrency:
@@ -96,6 +96,25 @@ jobs:
           VERSION=$(node -p "require('./package.json').version")
           echo "VERSION=$VERSION" >> $GITHUB_ENV
           echo "New version: $VERSION"
+
+      - name: Check for existing release PR
+        id: check_pr
+        uses: jwalton/gh-find-pr@v1
+        with:
+          head: '*release/*'
+          base: 'master'
+          state: 'open'
+          sort: 'created'
+          per_page: 1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Guard - skip if release PR exists
+        if: ${{ steps.check_pr.outputs.pr_number != '' }}
+        shell: bash
+        run: |
+          echo "Skip creating Release PR: existing release PR ${{ steps.check_pr.outputs.pr_number }} found."
+          exit 0
 
       - name: Create Release PR
         uses: peter-evans/create-pull-request@v6
