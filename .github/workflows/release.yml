@@ -2,12 +2,7 @@ name: Release
 
 on:
   workflow_dispatch:
-    inputs:
-      force:
-        description: "Force create release PR even if no changes since last tag"
-        required: false
-        default: "false"
-        type: boolean
+    # 移除 inputs 部分，不再需要任何输入
 
   #pull_request:
     #types: [closed]
@@ -24,16 +19,15 @@ permissions:
 
 jobs:
   create_release_pr:
-    if: ${{ github.event_name == 'workflow_dispatch' || github.event.pull_request.merged == true }}
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout master (with tags)
+     - name: Checkout master (with tags)
         uses: actions/checkout@v4
         with:
           ref: master
           fetch-depth: 0
 
-      - name: Find latest tag
+     - name: Find latest tag
         id: lasttag
         shell: bash
         run: |
@@ -41,7 +35,7 @@ jobs:
           echo "tag=$TAG" >> "$GITHUB_OUTPUT"
           echo "Latest tag: ${TAG:-<none>}"
 
-      - name: Determine version bump
+     - name: Determine version bump
         id: determine_bump
         shell: bash
         run: |
@@ -72,7 +66,7 @@ jobs:
             echo "version_bump=patch" >> "$GITHUB_OUTPUT"  # 默认为patch
           fi
 
-      - name: Bump version
+     - name: Bump version
         id: bump
         shell: bash
         run: |
@@ -102,7 +96,7 @@ jobs:
           echo "VERSION=$NEW_VERSION" >> $GITHUB_ENV
           echo "New version: $NEW_VERSION"
 
-      - name: Create Release PR
+     - name: Create Release PR
         uses: peter-evans/create-pull-request@v6
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
@@ -113,11 +107,10 @@ jobs:
             This PR was created automatically by GitHub Actions.
             - Bump type: `${{ steps.determine_bump.outputs.version_bump }}`
             - New version: `v${{ env.VERSION }}`
-            - Forced: `${{ github.event.inputs.force || 'false' }}`
           base: master
           labels: release
 
-      - name: Check for existing release PR
+     - name: Check for existing release PR
         id: check_pr
         uses: jwalton/gh-find-current-pr@v1
         with:
@@ -127,7 +120,7 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Guard - skip if release PR exists
+     - name: Guard - skip if release PR exists
         if: ${{ steps.check_pr.outputs.pr_number != '' }}
         shell: bash
         run: |
