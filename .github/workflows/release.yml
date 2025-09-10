@@ -1,26 +1,14 @@
 name: Release
 
 on:
+  # 一个按钮：不带任何输入
   workflow_dispatch:
-    inputs:
-      bump:
-        description: "Version bump type"
-        required: true
-        default: patch
-        type: choice
-        options: [major, minor, patch]
-      force:
-        description: "Force create release PR even if no changes since last tag"
-        required: false
-        default: "false"
-        type: choice
-        options: ["false", "true"]
 
+  # Release PR 合并后自动构建&发布
   pull_request:
     types: [closed]
-    branches: [master]   # 如果主分支是 main 的话改成 main
+    branches: [master]
 
-# 防止多次并发手滑触发
 concurrency:
   group: release
   cancel-in-progress: true
@@ -33,16 +21,16 @@ env:
   IMAGE_NAME: garenmtech1981/wms   # 改成你的 <DockerHub用户名>/<仓库名>
 
 jobs:
-  # ① 手动触发：守卫检查 + 生成 Release PR
+  # ① 手动点击按钮：自动计算 bump + 生成 Release PR
   create_release_pr:
     if: ${{ github.event_name == 'workflow_dispatch' }}
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout master (with tags)
+      - name: Checkout master (with history & tags)
         uses: actions/checkout@v4
         with:
           ref: master
-          fetch-depth: 0                      # 需要拿到历史和 tags
+          fetch-depth: 0
 
       - name: Find latest tag
         id: lasttag
@@ -52,7 +40,7 @@ jobs:
           echo "tag=$TAG" >> "$GITHUB_OUTPUT"
           echo "Latest tag: ${TAG:-<none>}"
 
-      - name: Guard - check changes since latest tag
+      - name: Guard - changes since latest tag
         id: guard
         shell: bash
         run: |
@@ -63,20 +51,17 @@ jobs:
             exit 0
           fi
 
-          # 先看 commit 数
           COMMITS=$(git rev-list "$TAG..HEAD" --count || echo 0)
           echo "Commits since $TAG: $COMMITS"
-
           if [ "$COMMITS" -eq 0 ]; then
             echo "No commits since $TAG -> skip."
             echo "should_release=false" >> "$GITHUB_OUTPUT"
             exit 0
           fi
 
-          # 再排除仅改版本/工作流的场景
+          # 排除仅改版本/工作流
           CHANGED=$(git diff --name-only "$TAG..HEAD" | \
             grep -Ev '^(package\.json|package-lock\.json|\.github/workflows/release\.yml)$' || true)
-
           echo "Changed files (filtered):"
           echo "$CHANGED"
 
@@ -87,52 +72,90 @@ jobs:
             echo "should_release=true" >> "$GITHUB_OUTPUT"
           fi
 
-      - name: Stop if no changes (unless forced)
-        if: ${{ steps.guard.outputs.should_release != 'true' && github.event.inputs.force != 'true' }}
-        shell: bash
-        run: |
-          echo "Skip creating Release PR: no meaningful changes since last tag and not forced."
-          exit 0
+      - name: Stop if no changes
+        if: ${{ steps.guard.outputs.should_release != 'true' }}
+        run: echo "Skip: no meaningful changes since last tag."
 
-      - name: Check for existing release PR
-        id: check_pr
-        uses: jwalton/gh-find-current-pr@v1
+      - name: Check for existing open release PR
+        if: ${{ steps.guard.outputs.should_release == 'true' }}
+        id: open_release_pr
+        uses: actions/github-script@v7
         with:
-          head: '*release/*'
-          base: 'master'
-          state: 'open'
-          sort: 'created'
-          per_page: 1
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            const {owner, repo} = context.repo;
+            const prs = await github.paginate(github.rest.pulls.list, {
+              owner, repo, state: 'open', per_page: 100
+            });
+            const match = prs.find(pr =>
+              pr.base?.ref === 'master' && pr.head?.ref?.startsWith('release/')
+            );
+            core.setOutput('pr_number', match ? String(match.number) : '');
 
-      - name: Guard - skip if release PR exists
-        if: ${{ steps.check_pr.outputs.pr_number != '' && github.event.inputs.force != 'true' }}
-        shell: bash
-        run: |
-          echo "Skip creating Release PR: existing release PR ${{ steps.check_pr.outputs.pr_number }} found."
-          exit 0
+      - name: Guard - skip if a release PR already exists
+        if: ${{ steps.guard.outputs.should_release == 'true' && steps.open_release_pr.outputs.pr_number != '' }}
+        run: echo "Skip: existing release PR #${{ steps.open_release_pr.outputs.pr_number }}."
+
+      # === 自动计算 bump：按 PR 标签 major > minor > patch 取最高 ===
+      - name: Auto-detect bump from merged PR labels
+        if: ${{ steps.guard.outputs.should_release == 'true' && steps.open_release_pr.outputs.pr_number == '' }}
+        id: suggest
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const { execSync } = require('node:child_process');
+            const { owner, repo } = context.repo;
+            const tag = `${{ steps.lasttag.outputs.tag }}` || null;
+
+            let since = null;
+            if (tag) {
+              try {
+                since = execSync(`git log -1 --format=%cI ${tag}`, {stdio:['ignore','pipe','pipe']})
+                         .toString().trim();
+              } catch(e) { since = null; }
+            }
+
+            const q = `repo:${owner}/${repo} is:pr is:merged base:master${since ? ' merged:>=' + since : ''}`;
+            const results = await github.paginate(
+              github.rest.search.issuesAndPullRequests, { q, per_page: 100 }
+            );
+
+            let rank = 1; // 1:patch, 2:minor, 3:major
+            for (const pr of results) {
+              const labels = (pr.labels || []).map(l => (typeof l === 'string' ? l : l.name).toLowerCase());
+              if (labels.includes('major')) { rank = Math.max(rank, 3); continue; }
+              if (labels.includes('minor')) { rank = Math.max(rank, 2); continue; }
+              if (labels.includes('patch')) { rank = Math.max(rank, 1); continue; }
+            }
+            const map = {1:'patch', 2:'minor', 3:'major'};
+            const rec = map[rank] || 'patch';
+            core.info(`Recommended bump: ${rec} (from merged PR labels since ${since || 'beginning'})`);
+            core.setOutput('recommended', rec);
 
       - name: Setup Node
+        if: ${{ steps.guard.outputs.should_release == 'true' && steps.open_release_pr.outputs.pr_number == '' }}
         uses: actions/setup-node@v4
         with:
           node-version: '20'
 
       - name: Install dependencies
-        shell: bash
+        if: ${{ steps.guard.outputs.should_release == 'true' && steps.open_release_pr.outputs.pr_number == '' }}
         run: |
           if [ -f package-lock.json ]; then npm ci; else npm i; fi
 
-      - name: Bump version
+      - name: Bump version (auto)
+        if: ${{ steps.guard.outputs.should_release == 'true' && steps.open_release_pr.outputs.pr_number == '' }}
         id: bump
         shell: bash
         run: |
-          npm version "${{ github.event.inputs.bump }}" --no-git-tag-version
+          BUMP="${{ steps.suggest.outputs.recommended }}"
+          echo "Auto bump: $BUMP"
+          npm version "$BUMP" --no-git-tag-version
           VERSION=$(node -p "require('./package.json').version")
           echo "VERSION=$VERSION" >> $GITHUB_ENV
           echo "New version: $VERSION"
 
       - name: Create Release PR
+        if: ${{ steps.guard.outputs.should_release == 'true' && steps.open_release_pr.outputs.pr_number == '' }}
         uses: peter-evans/create-pull-request@v6
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
@@ -140,14 +163,13 @@ jobs:
           branch: release/bump-v${{ env.VERSION }}
           title: "Release: v${{ env.VERSION }}"
           body: |
-            This PR was created automatically by GitHub Actions.
-            - Bump type: `${{ github.event.inputs.bump }}`
+            Auto-created by GitHub Actions.
+            - Auto-detected bump: `${{ steps.suggest.outputs.recommended }}`
             - New version: `v${{ env.VERSION }}`
-            - Forced: `${{ github.event.inputs.force || 'false' }}`
           base: master
           labels: release
 
-  # ② Release PR 合并后：构建并推送 Docker 镜像 + 打 tag + 创建 GitHub Release
+  # ② Release PR 合并后：构建/推镜像 + 打 tag + 创建 GitHub Release
   build_and_push_on_merge:
     if: ${{ github.event_name == 'pull_request' && github.event.action == 'closed' && github.event.pull_request.merged == true }}
     runs-on: ubuntu-latest
@@ -210,7 +232,7 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-  # ③ 可选：PR 被关闭但未合并时，只输出一句话避免红色
+  # ③ PR 关闭未合并：避免红色失败
   skip_when_closed_without_merge:
     if: ${{ github.event_name == 'pull_request' && github.event.action == 'closed' && github.event.pull_request.merged == false }}
     runs-on: ubuntu-latest
