@@ -2,12 +2,12 @@ name: Release
 
 on:
   # 只有一个按钮，不带任何输入项
-  workflow_dispatch: {}
+  workflow_dispatch:
 
   # 合并 Release PR 后自动构建/发布
   pull_request:
     types: [closed]
-    branches: [master]
+    branches: [master]   # 主分支是 main 的话改成 main
 
 concurrency:
   group: release
@@ -44,12 +44,13 @@ jobs:
         id: guard
         shell: bash
         run: |
-          TAG="${{ steps.lasttag.outputs.tag }}"
+          TAG='${{ steps.lasttag.outputs.tag }}'
           if [ -z "$TAG" ]; then
             echo "No tag yet -> allow first release."
             echo "should_release=true" >> "$GITHUB_OUTPUT"
             exit 0
           fi
+
           COMMITS=$(git rev-list "$TAG..HEAD" --count || echo 0)
           echo "Commits since $TAG: $COMMITS"
           if [ "$COMMITS" -eq 0 ]; then
@@ -57,6 +58,7 @@ jobs:
             echo "should_release=false" >> "$GITHUB_OUTPUT"
             exit 0
           fi
+
           # 过滤仅改版本/工作流
           CHANGED=$(git diff --name-only "$TAG..HEAD" | \
             grep -Ev '^(package\.json|package-lock\.json|\.github/workflows/release\.yml)$' || true)
@@ -71,7 +73,8 @@ jobs:
 
       - name: Stop if no changes
         if: ${{ steps.guard.outputs.should_release != 'true' }}
-        run: echo "Skip: no meaningful changes since last tag."
+        run: |
+          echo "Skip: no meaningful changes since last tag."
 
       - name: Check for existing open release PR
         if: ${{ steps.guard.outputs.should_release == 'true' }}
@@ -90,7 +93,8 @@ jobs:
 
       - name: Guard - skip if a release PR already exists
         if: ${{ steps.guard.outputs.should_release == 'true' && steps.open_release_pr.outputs.pr_number != '' }}
-        run: echo "Skip: existing release PR #${{ steps.open_release_pr.outputs.pr_number }}."
+        run: |
+          echo "Skip: existing release PR #${{ steps.open_release_pr.outputs.pr_number }}."
 
       # === 自动计算 bump：按 PR 标签 major > minor > patch 取最高 ===
       - name: Auto-detect bump from merged PR labels
@@ -99,30 +103,32 @@ jobs:
         uses: actions/github-script@v7
         with:
           script: |
-            const { execSync } = require('node:child_process');
             const { owner, repo } = context.repo;
-            const tag = `${{ steps.lasttag.outputs.tag }}` || null;
+            const tag = '${{ steps.lasttag.outputs.tag }}';
             let since = null;
+
             if (tag) {
+              const { execSync } = require('node:child_process');
               try {
                 since = execSync(`git log -1 --format=%cI ${tag}`, {stdio:['ignore','pipe','pipe']})
-                         .toString().trim();
-              } catch(e) { since = null; }
+                        .toString().trim();
+              } catch (e) { since = null; }
             }
+
             const q = `repo:${owner}/${repo} is:pr is:merged base:master${since ? ' merged:>=' + since : ''}`;
-            const results = await github.paginate(
-              github.rest.search.issuesAndPullRequests, { q, per_page: 100 }
-            );
+            const res = await github.rest.search.issuesAndPullRequests({ q, per_page: 100 });
+            const items = res.data.items || [];
+
             let rank = 1; // 1:patch, 2:minor, 3:major
-            for (const pr of results) {
+            for (const pr of items) {
               const labels = (pr.labels || []).map(l => (typeof l === 'string' ? l : l.name).toLowerCase());
               if (labels.includes('major')) { rank = 3; break; }
               if (labels.includes('minor')) { rank = Math.max(rank, 2); }
               else if (labels.includes('patch')) { rank = Math.max(rank, 1); }
             }
             const map = {1:'patch', 2:'minor', 3:'major'};
-            core.setOutput('recommended', map[rank] || 'patch');
             core.info(`Auto bump: ${map[rank] || 'patch'}`);
+            core.setOutput('recommended', map[rank] || 'patch');
 
       - name: Setup Node
         if: ${{ steps.guard.outputs.should_release == 'true' && steps.open_release_pr.outputs.pr_number == '' }}
@@ -140,7 +146,7 @@ jobs:
         id: bump
         shell: bash
         run: |
-          BUMP="${{ steps.suggest.outputs.recommended }}"
+          BUMP='${{ steps.suggest.outputs.recommended }}'
           echo "Auto bump: $BUMP"
           npm version "$BUMP" --no-git-tag-version
           VERSION=$(node -p "require('./package.json').version")
@@ -230,4 +236,5 @@ jobs:
     if: ${{ github.event_name == 'pull_request' && github.event.action == 'closed' && github.event.pull_request.merged == false }}
     runs-on: ubuntu-latest
     steps:
-      - run: echo "PR closed without merge. Skipping release."
+      - run: |
+          echo "PR closed without merge. Skipping release."
