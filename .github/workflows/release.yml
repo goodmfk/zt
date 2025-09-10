@@ -1,14 +1,8 @@
 name: Release
 
 on:
-  workflow_dispatch:
-    # 移除 inputs 部分，不再需要任何输入
+  workflow_dispatch: {}
 
-  #pull_request:
-    #types: [closed]
-    #branches: [master]   # 如果主分支是 main 的话改成 main
-
-# 防止多次并发手滑触发
 concurrency:
   group: release
   cancel-in-progress: true
@@ -21,108 +15,108 @@ jobs:
   create_release_pr:
     runs-on: ubuntu-latest
     steps:
-     - name: Checkout master (with tags)
-        uses: actions/checkout@v4
-        with:
-          ref: master
-          fetch-depth: 0
+    - name: Checkout master (with tags)
+      uses: actions/checkout@v4
+      with:
+        ref: master
+        fetch-depth: 0
 
-     - name: Find latest tag
-        id: lasttag
-        shell: bash
-        run: |
-          TAG=$(git tag --list 'v*' --sort=-version:refname | head -n 1 || true)
-          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
-          echo "Latest tag: ${TAG:-<none>}"
+    - name: Find latest tag
+      id: lasttag
+      shell: bash
+      run: |
+        TAG=$(git tag --list 'v*' --sort=-version:refname | head -n 1 || true)
+        echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+        echo "Latest tag: ${TAG:-<none>}"
 
-     - name: Determine version bump
-        id: determine_bump
-        shell: bash
-        run: |
-          if [ -z "${{ steps.lasttag.outputs.tag }}" ]; then
-            echo "version_bump=major" >> "$GITHUB_OUTPUT"
-            exit 0
-          fi
-
-          major_bump=false
-          minor_bump=false
-          patch_bump=false
-
-          # 遍历最近的PR，检查是否有major, minor, patch标签
-          for pr in $(git log "${{ steps.lasttag.outputs.tag }}..HEAD" --grep="^Merge pull request #" --format="%H"); do
-            pr_labels=$(gh pr view "$pr" --json labels --jq '.labels[].name')
-            if echo "$pr_labels" | grep -q "major"; then major_bump=true; fi
-            if echo "$pr_labels" | grep -q "minor"; then minor_bump=true; fi
-            if echo "$pr_labels" | grep -q "patch"; then patch_bump=true; fi
-          done
-
-          if $major_bump; then
-            echo "version_bump=major" >> "$GITHUB_OUTPUT"
-          elif $minor_bump; then
-            echo "version_bump=minor" >> "$GITHUB_OUTPUT"
-          elif $patch_bump; then
-            echo "version_bump=patch" >> "$GITHUB_OUTPUT"
-          else
-            echo "version_bump=patch" >> "$GITHUB_OUTPUT"  # 默认为patch
-          fi
-
-     - name: Bump version
-        id: bump
-        shell: bash
-        run: |
-          VERSION=$(node -p "require('./package.json').version")
-          VERSION_PARTS=($VERSION)
-          MAJOR=${VERSION_PARTS[0]}
-          MINOR=${VERSION_PARTS[1]}
-          PATCH=${VERSION_PARTS[2]}
-
-          case ${{ steps.determine_bump.outputs.version_bump }} in
-            major)
-              MAJOR=$((MAJOR+1))
-              MINOR=0
-              PATCH=0
-              ;;
-            minor)
-              MINOR=$((MINOR+1))
-              PATCH=0
-              ;;
-            patch)
-              PATCH=$((PATCH+1))
-              ;;
-          esac
-
-          NEW_VERSION="$MAJOR.$MINOR.$PATCH"
-          npm version "$NEW_VERSION" --no-git-tag-version
-          echo "VERSION=$NEW_VERSION" >> $GITHUB_ENV
-          echo "New version: $NEW_VERSION"
-
-     - name: Create Release PR
-        uses: peter-evans/create-pull-request@v6
-        with:
-          token: ${{ secrets.GITHUB_TOKEN }}
-          commit-message: "chore(release): bump version to v${{ env.VERSION }}"
-          branch: release/bump-v${{ env.VERSION }}
-          title: "Release: v${{ env.VERSION }}"
-          body: |
-            This PR was created automatically by GitHub Actions.
-            - Bump type: `${{ steps.determine_bump.outputs.version_bump }}`
-            - New version: `v${{ env.VERSION }}`
-          base: master
-          labels: release
-
-     - name: Check for existing release PR
-        id: check_pr
-        uses: jwalton/gh-find-current-pr@v1
-        with:
-          head: 'release/bump-v${{ env.VERSION }}'
-          base: 'master'
-          state: 'open'
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-
-     - name: Guard - skip if release PR exists
-        if: ${{ steps.check_pr.outputs.pr_number != '' }}
-        shell: bash
-        run: |
-          echo "Skip creating Release PR: existing release PR ${{ steps.check_pr.outputs.pr_number }} found."
+    - name: Determine version bump
+      id: determine_bump
+      shell: bash
+      run: |
+        if [ -z "${{ steps.lasttag.outputs.tag }}" ]; then
+          echo "version_bump=major" >> "$GITHUB_OUTPUT"
           exit 0
+        fi
+
+        major_bump=false
+        minor_bump=false
+        patch_bump=false
+
+        # 遍历最近的PR，检查是否有major, minor, patch标签
+        for pr in $(git log "${{ steps.lasttag.outputs.tag }}..HEAD" --grep="^Merge pull request #" --format="%H"); do
+          pr_labels=$(gh pr view "$pr" --json labels --jq '.labels[].name')
+          if echo "$pr_labels" | grep -q "major"; then major_bump=true; fi
+          if echo "$pr_labels" | grep -q "minor"; then minor_bump=true; fi
+          if echo "$pr_labels" | grep -q "patch"; then patch_bump=true; fi
+        done
+
+        if $major_bump; then
+          echo "version_bump=major" >> "$GITHUB_OUTPUT"
+        elif $minor_bump; then
+          echo "version_bump=minor" >> "$GITHUB_OUTPUT"
+        elif $patch_bump; then
+          echo "version_bump=patch" >> "$GITHUB_OUTPUT"
+        else
+          echo "version_bump=patch" >> "$GITHUB_OUTPUT"  # 默认为patch
+        fi
+
+    - name: Bump version
+      id: bump
+      shell: bash
+      run: |
+        VERSION=$(node -p "require('./package.json').version")
+        VERSION_PARTS=($VERSION)
+        MAJOR=${VERSION_PARTS[0]}
+        MINOR=${VERSION_PARTS[1]}
+        PATCH=${VERSION_PARTS[2]}
+
+        case ${{ steps.determine_bump.outputs.version_bump }} in
+          major)
+            MAJOR=$((MAJOR+1))
+            MINOR=0
+            PATCH=0
+            ;;
+          minor)
+            MINOR=$((MINOR+1))
+            PATCH=0
+            ;;
+          patch)
+            PATCH=$((PATCH+1))
+            ;;
+        esac
+
+        NEW_VERSION="$MAJOR.$MINOR.$PATCH"
+        npm version "$NEW_VERSION" --no-git-tag-version
+        echo "VERSION=$NEW_VERSION" >> $GITHUB_ENV
+        echo "New version: $NEW_VERSION"
+
+    - name: Create Release PR
+      uses: peter-evans/create-pull-request@v6
+      with:
+        token: ${{ secrets.GITHUB_TOKEN }}
+        commit-message: "chore(release): bump version to v${{ env.VERSION }}"
+        branch: release/bump-v${{ env.VERSION }}
+        title: "Release: v${{ env.VERSION }}"
+        body: |
+          This PR was created automatically by GitHub Actions.
+          - Bump type: `${{ steps.determine_bump.outputs.version_bump }}`
+          - New version: `v${{ env.VERSION }}`
+        base: master
+        labels: release
+
+    - name: Check for existing release PR
+      id: check_pr
+      uses: jwalton/gh-find-current-pr@v1
+      with:
+        head: 'release/bump-v${{ env.VERSION }}'
+        base: 'master'
+        state: 'open'
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+    - name: Guard - skip if release PR exists
+      if: ${{ steps.check_pr.outputs.pr_number != '' }}
+      shell: bash
+      run: |
+        echo "Skip creating Release PR: existing release PR ${{ steps.check_pr.outputs.pr_number }} found."
+        exit 0
