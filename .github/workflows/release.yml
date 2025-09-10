@@ -1,10 +1,10 @@
 name: Release
 
 on:
-  # 只有一个按钮，不带任何输入项
+  # 只有一个按钮，不带任何输入
   workflow_dispatch:
 
-  # 合并 Release PR 后自动构建/发布
+  # 合并 PR 后（用于 Release PR 合并时触发发布）
   pull_request:
     types: [closed]
     branches: [master]   # 主分支是 main 的话改成 main
@@ -96,79 +96,94 @@ jobs:
         run: |
           echo "Skip: existing release PR #${{ steps.open_release_pr.outputs.pr_number }}."
 
-      # === 自动计算 bump：排除 Release PR；按 PR 标签 major > minor > patch 取最高，并输出调试明细 ===
-      - name: Auto-detect bump from merged PR labels
+      # === 自动计算 bump（稳健版）：用 PR 列表按 merged_at 过滤；排除 Release PR；输出调试明细 ===
+      - name: Auto-detect bump from merged PR labels (robust)
         if: ${{ steps.guard.outputs.should_release == 'true' && steps.open_release_pr.outputs.pr_number == '' }}
         id: suggest
         uses: actions/github-script@v7
         with:
           script: |
             const { owner, repo } = context.repo;
-            const tag = '${{ steps.lasttag.outputs.tag }}';
-            const { execSync } = require('node:child_process');
+            const cp = require('node:child_process');
 
-            // 优先取 tag 的 taggerdate（真正的打 tag 时间）；失败再退回到被标记 commit 的时间
+            // 上一个 tag 的 tagger 时间（真实打 tag 时间）；失败再退回到被标记 commit 的时间
+            const tag = '${{ steps.lasttag.outputs.tag }}';
             let since = null;
             if (tag) {
               try {
-                since = execSync(`git for-each-ref --format='%(taggerdate:iso8601)' refs/tags/${tag}`, {stdio:['ignore','pipe','pipe']})
-                         .toString().trim();
+                since = cp.execSync(`git for-each-ref --format='%(taggerdate:iso8601)' refs/tags/${tag}`, {stdio:['ignore','pipe','pipe']}).toString().trim();
               } catch (_) {}
               if (!since) {
                 try {
-                  since = execSync(`git log -1 --format=%cI ${tag}`, {stdio:['ignore','pipe','pipe']})
-                           .toString().trim();
+                  since = cp.execSync(`git log -1 --format=%cI ${tag}`, {stdio:['ignore','pipe','pipe']}).toString().trim();
                 } catch (_) {}
               }
             }
+            const sinceDate = since ? new Date(since) : null;
 
-            const q = `repo:${owner}/${repo} is:pr is:merged base:master${since ? ' merged:>=' + since : ''}`;
-            const res = await github.rest.search.issuesAndPullRequests({ q, per_page: 100 });
-            const items = res.data.items || [];
+            // 直接列 PR（state=closed, base=master），用 merged_at 过滤
+            const perPage = 100;
+            let page = 1;
+            const candidates = [];
+            while (true) {
+              const { data } = await github.rest.pulls.list({
+                owner, repo,
+                state: 'closed',
+                base: 'master',
+                sort: 'updated',
+                direction: 'desc',
+                per_page: perPage,
+                page
+              });
+              if (!data.length) break;
+              for (const pr of data) {
+                if (!pr.merged_at) continue;
+                if (sinceDate && new Date(pr.merged_at) < sinceDate) continue;
+                candidates.push(pr);
+              }
+              if (data.length < perPage) break;
+              if (page >= 10) break; // 防御上限
+              page++;
+            }
 
+            // 计算 bump，排除 Release PR
             const rows = [];
             let rank = 0; // 0:none, 1:patch, 2:minor, 3:major
+            for (const pr of candidates) {
+              const headRef = pr.head?.ref || '';
+              const labels = (pr.labels || []).map(l => l.name || String(l));
+              const lower = labels.map(s => String(s || '').toLowerCase().trim());
 
-            for (const pr of items) {
-              // 读取 head.ref（用于识别 release/*），同时用搜索结果里的 labels 做判定，减少 API 数量
-              let headRef = '';
-              try {
-                const full = await github.rest.pulls.get({ owner, repo, pull_number: pr.number });
-                headRef = full.data.head?.ref || '';
-              } catch (_) {}
+              const isReleasePR = lower.includes('release') || headRef.startsWith('release/');
+              rows.push({
+                number: pr.number,
+                title: pr.title,
+                merged_at: pr.merged_at,
+                labels: labels.join(', '),
+                note: isReleasePR ? 'skipped (release PR)' : 'used'
+              });
+              if (isReleasePR) continue;
 
-              const rawLabels = (pr.labels || []).map(l => (typeof l === 'string' ? l : l.name));
-              const labelsLower = rawLabels.map(s => String(s || '').toLowerCase().trim());
-
-              const isReleasePR = labelsLower.includes('release') || headRef.startsWith('release/');
-              if (isReleasePR) {
-                rows.push({ number: pr.number, title: pr.title, merged_at: pr.closed_at || 'n/a', labels: rawLabels.join(', '), skipped: true });
-                continue;
-              }
-
-              if (labelsLower.includes('major'))      rank = Math.max(rank, 3);
-              else if (labelsLower.includes('minor')) rank = Math.max(rank, 2);
-              else if (labelsLower.includes('patch')) rank = Math.max(rank, 1);
-
-              rows.push({ number: pr.number, title: pr.title, merged_at: pr.closed_at || 'n/a', labels: rawLabels.join(', '), skipped: false });
-              if (rank === 3) break; // 有 major 就可提前结束
+              if (lower.includes('major')) { rank = Math.max(rank, 3); if (rank === 3) break; }
+              else if (lower.includes('minor')) { rank = Math.max(rank, 2); }
+              else if (lower.includes('patch')) { rank = Math.max(rank, 1); }
             }
 
             const bumpMap = {0:'patch', 1:'patch', 2:'minor', 3:'major'};
             const recommended = bumpMap[rank] || 'patch';
 
-            core.info(`Since tag ${tag || '<none>'}; query returned ${items.length} merged PRs.`);
+            core.info(`Since tag ${tag || '<none>'}; considered ${candidates.length} merged PRs.`);
             for (const r of rows) {
-              core.info(`#${r.number} | ${r.title} | labels: [${r.labels}] | merged_at: ${r.merged_at} | ${r.skipped ? 'SKIPPED (release PR)' : 'USED'}`);
+              core.info(`#${r.number} | ${r.title} | labels: [${r.labels}] | merged_at: ${r.merged_at} | ${r.note}`);
             }
             core.info(`=> Auto bump: ${recommended}`);
 
             await core.summary
-              .addHeading('Auto-detected bump')
+              .addHeading('Auto-detected bump (robust)')
               .addRaw(`Since tag: **${tag || '<none>'}**  | Base: **master**  | Result: **${recommended.toUpperCase()}**\n\n`)
               .addTable([
                 [{data: 'PR', header: true}, {data: 'Title', header: true}, {data: 'Labels', header: true}, {data: 'Merged at', header: true}, {data: 'Note', header: true}],
-                ...rows.map(r => [`#${r.number}`, r.title, r.labels || '(none)', r.merged_at, r.skipped ? 'skipped (release PR)' : 'used'])
+                ...rows.map(r => [`#${r.number}`, r.title, r.labels || '(none)', r.merged_at, r.note])
               ])
               .write();
 
@@ -212,9 +227,16 @@ jobs:
           base: master
           labels: release
 
-  # ② Release PR 合并后：构建/推镜像 + 打 tag + GitHub Release
+  # ② 只在 Release PR 合并后：构建/推镜像 + 打 tag + GitHub Release
   build_and_push_on_merge:
-    if: ${{ github.event_name == 'pull_request' && github.event.action == 'closed' && github.event.pull_request.merged == true }}
+    if: >
+      github.event_name == 'pull_request' &&
+      github.event.action == 'closed' &&
+      github.event.pull_request.merged == true &&
+      (
+        startsWith(github.event.pull_request.head.ref, 'release/') ||
+        contains(join(github.event.pull_request.labels.*.name, ' '), 'release')
+      )
     runs-on: ubuntu-latest
     steps:
       - name: Checkout merged code (with history)
