@@ -7,7 +7,7 @@ permissions:
   contents: read
 
 env:
-  # 先用你昨天 release 的仓库名做测试；他们上线后自己改成目标仓库
+  # This is my test repository path; update it to your actual Docker Hub repo
   IMAGE_NAME: garenmtech1981/wms
 
 jobs:
@@ -29,23 +29,24 @@ jobs:
         id: ver
         shell: bash
         run: |
-          # 1) package.json 必须在仓库根目录（若不在这里，请把路径改成 ./path/package.json）
+          # 1) package.json must be at the repo root
+          #    (if not, change the path to ./path/package.json)
           if [ ! -f package.json ]; then
             echo "::error::package.json not found at repository root"
             exit 1
           fi
 
-          # 2) 读取 version
+          # 2) Read the version
           RAW=$(node -e "try{console.log(require('./package.json').version || '')}catch(e){process.exit(1)}")
           echo "package.json version: $RAW"
 
-          # 容忍 'v2.3.4'，统一去掉前缀 v
+          # Accept 'v2.3.4' and strip the leading 'v'
           VERSION="${RAW#v}"
 
-          # 3) 用 Node 正则校验 semver（允许预发布/构建后缀）
+          # 3) Validate semver with a Node regex (pre-release/build metadata allowed)
           node -e "const v='${VERSION}'; const ok=/^(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)(?:-[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?$/.test(v); if(!ok){console.error('Invalid semver version:', v); process.exit(1)}"
 
-          # 4) 导出
+          # 4) Export
           echo "VERSION=$VERSION" >> $GITHUB_ENV
           echo "version=$VERSION" >> $GITHUB_OUTPUT
 
