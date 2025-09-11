@@ -16,6 +16,7 @@ permissions:
   pull-requests: write
 
 env:
+  # This is my test repository path; update it to your actual Docker Hub repo
   IMAGE_NAME: garenmtech1981/wms
 
 jobs:
