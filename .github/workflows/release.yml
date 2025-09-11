@@ -4,6 +4,13 @@ on:
   # 只有一个按钮，不带任何输入
   workflow_dispatch:
 
+    inputs:
+      # 添加一个输入参数来模拟自定义按钮文本
+      button_text:
+        description: 'Customize the button text'
+        required: false
+        default: 'Custom Button'
+        
   # 合并 PR 后（用于 Release PR 合并时触发发布）
   pull_request:
     types: [closed]
