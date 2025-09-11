@@ -7,12 +7,13 @@ permissions:
   contents: read
 
 env:
-  # 用“昨天 release 的仓库名”先测试；之后他们自己改即可
+  # 先用你昨天 release 的仓库名做测试；他们上线后自己改成目标仓库
   IMAGE_NAME: garenmtech1981/wms
 
 jobs:
   build_and_push:
     runs-on: ubuntu-latest
+
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -28,22 +29,23 @@ jobs:
         id: ver
         shell: bash
         run: |
+          # 1) package.json 必须在仓库根目录（若不在这里，请把路径改成 ./path/package.json）
           if [ ! -f package.json ]; then
             echo "::error::package.json not found at repository root"
             exit 1
           fi
 
-          VERSION=$(node -e "try{console.log(require('./package.json').version || '')}catch(e){process.exit(1)}")
-          echo "package.json version: $VERSION"
+          # 2) 读取 version
+          RAW=$(node -e "try{console.log(require('./package.json').version || '')}catch(e){process.exit(1)}")
+          echo "package.json version: $RAW"
 
-          VERSION="${VERSION#v}"   # 容忍 v2.3.4，统一去掉 v
+          # 容忍 'v2.3.4'，统一去掉前缀 v
+          VERSION="${RAW#v}"
 
-          # 简单 semver 校验（允许预发布/构建后缀）
-          if ! echo "$VERSION" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+([\-+].*)?$'; then
-            echo "::error::Invalid semver version: $VERSION"
-            exit 1
-          fi
+          # 3) 用 Node 正则校验 semver（允许预发布/构建后缀）
+          node -e "const v='${VERSION}'; const ok=/^(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)(?:-[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?$/.test(v); if(!ok){console.error('Invalid semver version:', v); process.exit(1)}"
 
+          # 4) 导出
           echo "VERSION=$VERSION" >> $GITHUB_ENV
           echo "version=$VERSION" >> $GITHUB_OUTPUT
 
