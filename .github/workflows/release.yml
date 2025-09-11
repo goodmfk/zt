@@ -1,13 +1,11 @@
 name: Release
 
 on:
-  # 只有一个按钮，不带任何输入
   workflow_dispatch:
 
-  # 合并 PR 后（用于 Release PR 合并时触发发布）
   pull_request:
     types: [closed]
-    branches: [master]   # 主分支是 main 的话改成 main
+    branches: [main]
 
 concurrency:
   group: release
@@ -18,18 +16,17 @@ permissions:
   pull-requests: write
 
 env:
-  IMAGE_NAME: garenmtech1981/wms   # 改成你的 <DockerHub用户名>/<仓库名>
+  IMAGE_NAME: garenmtech1981/wms
 
 jobs:
-  # ① 手动运行：自动计算 bump + 生成 Release PR
   create_release_pr:
     if: ${{ github.event_name == 'workflow_dispatch' }}
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout master (with history & tags)
+      - name: Checkout main (with history & tags)
         uses: actions/checkout@v4
         with:
-          ref: master
+          ref: main
           fetch-depth: 0
 
       - name: Find latest tag
@@ -59,7 +56,7 @@ jobs:
             exit 0
           fi
 
-          # 过滤仅改版本/工作流
+          # Exclude changes that only touch version/workflow files
           CHANGED=$(git diff --name-only "$TAG..HEAD" | \
             grep -Ev '^(package\.json|package-lock\.json|\.github/workflows/release\.yml)$' || true)
           echo "Changed files (filtered):"
@@ -87,7 +84,7 @@ jobs:
               owner, repo, state: 'open', per_page: 100
             });
             const match = prs.find(pr =>
-              pr.base?.ref === 'master' && pr.head?.ref?.startsWith('release/')
+              pr.base?.ref === 'main' && pr.head?.ref?.startsWith('release/')
             );
             core.setOutput('pr_number', match ? String(match.number) : '');
 
@@ -96,7 +93,7 @@ jobs:
         run: |
           echo "Skip: existing release PR #${{ steps.open_release_pr.outputs.pr_number }}."
 
-      # === 自动计算 bump（稳健版）：用 PR 列表按 merged_at 过滤；排除 Release PR；输出调试明细 ===
+      # === Auto-calc bump (robust): list PRs filtered by merged_at; skip Release PRs; output debug details ===
       - name: Auto-detect bump from merged PR labels (robust)
         if: ${{ steps.guard.outputs.should_release == 'true' && steps.open_release_pr.outputs.pr_number == '' }}
         id: suggest
@@ -106,7 +103,7 @@ jobs:
             const { owner, repo } = context.repo;
             const cp = require('node:child_process');
 
-            // 上一个 tag 的 tagger 时间（真实打 tag 时间）；失败再退回到被标记 commit 的时间
+            // Get previous tag's tagger timestamp (actual tag time); fall back to the commit time if needed
             const tag = '${{ steps.lasttag.outputs.tag }}';
             let since = null;
             if (tag) {
@@ -121,7 +118,7 @@ jobs:
             }
             const sinceDate = since ? new Date(since) : null;
 
-            // 直接列 PR（state=closed, base=master），用 merged_at 过滤
+            // List PRs (state=closed, base=main) and filter by merged_at
             const perPage = 100;
             let page = 1;
             const candidates = [];
@@ -129,7 +126,7 @@ jobs:
               const { data } = await github.rest.pulls.list({
                 owner, repo,
                 state: 'closed',
-                base: 'master',
+                base: 'main',
                 sort: 'updated',
                 direction: 'desc',
                 per_page: perPage,
@@ -142,11 +139,11 @@ jobs:
                 candidates.push(pr);
               }
               if (data.length < perPage) break;
-              if (page >= 10) break; // 防御上限
+              if (page >= 10) break; // defensive cap
               page++;
             }
 
-            // 计算 bump，排除 Release PR
+            // Calculate the bump; skip Release PRs
             const rows = [];
             let rank = 0; // 0:none, 1:patch, 2:minor, 3:major
             for (const pr of candidates) {
@@ -180,7 +177,7 @@ jobs:
 
             await core.summary
               .addHeading('Auto-detected bump (robust)')
-              .addRaw(`Since tag: **${tag || '<none>'}**  | Base: **master**  | Result: **${recommended.toUpperCase()}**\n\n`)
+              .addRaw(`Since tag: **${tag || '<none>'}**  | Base: **main**  | Result: **${recommended.toUpperCase()}**\n\n`)
               .addTable([
                 [{data: 'PR', header: true}, {data: 'Title', header: true}, {data: 'Labels', header: true}, {data: 'Merged at', header: true}, {data: 'Note', header: true}],
                 ...rows.map(r => [`#${r.number}`, r.title, r.labels || '(none)', r.merged_at, r.note])
@@ -224,10 +221,10 @@ jobs:
             Auto-created by GitHub Actions.
             - Auto-detected bump: `${{ steps.suggest.outputs.recommended }}`
             - New version: `v${{ env.VERSION }}`
-          base: master
+          base: main
           labels: release
 
-  # ② 只在 Release PR 合并后：构建/推镜像 + 打 tag + GitHub Release
+  # ② After a Release PR is merged only: build/push images + tag repo + GitHub Release
   build_and_push_on_merge:
     if: >
       github.event_name == 'pull_request' &&
@@ -297,7 +294,7 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-  # ③ PR 关闭未合并：避免红色失败
+  # ③ PR closed without merge: avoid a red failure
   skip_when_closed_without_merge:
     if: ${{ github.event_name == 'pull_request' && github.event.action == 'closed' && github.event.pull_request.merged == false }}
     runs-on: ubuntu-latest
