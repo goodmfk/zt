@@ -1,35 +1,51 @@
-name: Manual Docker Image Release
+name: Manual Docker Image Release (auto from package.json)
 
 on:
-  workflow_dispatch:
-    inputs:
-      version:
-        description: "Docker image version (e.g. 2.3.4 or v2.3.4)"
-        required: true
-        type: string
+  workflow_dispatch: {}
 
 permissions:
   contents: read
 
 env:
-  IMAGE_NAME: idealteamdocker/wms   # 目标镜像仓库
+  # 用“昨天 release 的仓库名”先测试；之后他们自己改即可
+  IMAGE_NAME: garenmtech1981/wms
 
 jobs:
   build_and_push:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
-      - name: Validate version format
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Read version from package.json
+        id: ver
         shell: bash
         run: |
-          VERSION='${{ inputs.version }}'
-          if ! echo "$VERSION" | grep -Eq '^(v)?[0-9]+\.[0-9]+\.[0-9]+$'; then
-            echo "Invalid version: $VERSION"
+          if [ ! -f package.json ]; then
+            echo "::error::package.json not found at repository root"
             exit 1
           fi
-          VERSION=${VERSION#v}
+
+          VERSION=$(node -e "try{console.log(require('./package.json').version || '')}catch(e){process.exit(1)}")
+          echo "package.json version: $VERSION"
+
+          VERSION="${VERSION#v}"   # 容忍 v2.3.4，统一去掉 v
+
+          # 简单 semver 校验（允许预发布/构建后缀）
+          if ! echo "$VERSION" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+([\-+].*)?$'; then
+            echo "::error::Invalid semver version: $VERSION"
+            exit 1
+          fi
+
           echo "VERSION=$VERSION" >> $GITHUB_ENV
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
 
       - name: Docker login
         uses: docker/login-action@v3
@@ -41,9 +57,13 @@ jobs:
         run: |
           docker build \
             -t "${{ env.IMAGE_NAME }}:${{ env.VERSION }}" \
-            -t "${{ env.IMAGE_NAME }}:latest" .
+            -t "${{ env.IMAGE_NAME }}:latest" \
+            .
 
       - name: Push image
         run: |
           docker push "${{ env.IMAGE_NAME }}:${{ env.VERSION }}"
           docker push "${{ env.IMAGE_NAME }}:latest"
+
+      - name: Summary
+        run: echo "Pushed $IMAGE_NAME:${VERSION} and $IMAGE_NAME:latest"
